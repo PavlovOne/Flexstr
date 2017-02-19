@@ -28,205 +28,191 @@
 #endif
 
 #ifdef WIN32
-int start_job(SOCKET sock)
+#define WOULDBLCOK WSAEWOULDBLOCK
 #else
-int start_job(int sock)
+#define WOULDBLCOK EWOULDBLOCK
 #endif
+
+char *gNetBuff, *gSettingsBuff, *gEncodesBuff;
+size_t gSettingsCount, gEncodesCount;
+size_t gEncodesPtr;
+
+int init_buff(void)
 {
-	int nError;
-//	int readyFlag = 0;
-	char *netBuff, *settingsBuff, *encodesBuff;
-	int len;
-	size_t settingsCount, encodesCount;
+	gEncodesCount = 0;
+	gSettingsCount = 0;
+	gEncodesPtr = 0;
 
-	netBuff = malloc(NET_BUFSIZE);
-	if (netBuff == NULL)
-	{
-		printf("Can not alloc network buffer\r\n");
+	gNetBuff = malloc(NET_BUFSIZE);
+	if (gNetBuff == NULL)
 		return -1;
-	}
 
-	settingsBuff = malloc(SETTINGS_BUFSIZE);
-	if (settingsBuff == NULL)
-	{
-		printf("Can not alloc settings buffer\r\n");
+	gSettingsBuff = malloc(SETTINGS_BUFSIZE);
+	if (gSettingsBuff == NULL)
 		return -1;
-	}
 
-	encodesBuff = malloc(ENCODES_BUFSIZE);
-	if (encodesBuff == NULL)
-	{
-		printf("Can not alloc encodes buffer\r\n");
+	gEncodesBuff = malloc(ENCODES_BUFSIZE);
+	if (gEncodesBuff == NULL)
 		return -1;
-	}
-
-	printf("Started the encode job\r\n");
-	
-	// job main loop
-	for(;;)	{
-		len = recv(sock, netBuff, NET_BUFSIZE, 0);
-		if (len > 0) {
-			netBuff[len] = 0;
-			printf("%s\r\n", netBuff);
-
-			json_parse(netBuff, settingsBuff, &settingsCount, encodesBuff, &encodesCount);
-
-			strcpy(netBuff, "{\"status\":\"success\"}");
-			send(sock, netBuff, strlen(netBuff), 0);
-		}
-
-		if (settingsCount > 0) {
-			// TODO : init settings
-
-			settingsCount = 0;
-		}
-
-		if (encodesCount > 0) {
-
-		}
-
-#ifdef WIN32
-		nError=WSAGetLastError();
-		if(nError!=WSAEWOULDBLOCK&&len!=0)
-#else
-		nError = errno;
-		if(nError!=EWOULDBLOCK&&len!=0)
-#endif
-		{
-			printf("Client disconnected!\r\n");
-
-			// Close our socket entirely
-#ifdef WIN32
-			closesocket(sock);
-#else
-			close(sock);
-#endif
-
-			printf("\r\n---------------------------------\r\n");
-
-			break;
-		}
-
-		sleepcp(1000);
-	}
-
-	free(netBuff);
-	free(settingsBuff);
-	free(encodesBuff);
 
 	return 0;
 }
 
+int get_network_error(void)
+{
 #ifdef WIN32
+	return WSAGetLastError();
+#else
+	return errno;
+#endif
+}
+
+#ifdef WIN32
+void close_network_socket(SOCKET sock)
+{
+	closesocket(sock);
+}
+#else
+void close_network_socket(int sock)
+{
+	close(sock);
+}
+#endif
+
 int main()
 {
+	int netLen, ret;
+	struct 	sockaddr_in serverInf;
+#ifdef WIN32
 	WSADATA wsaDat;
-	SOCKET mainSock, tempSock;
-	SOCKADDR_IN serverInf;
-	u_long iMode;
-	
+	SOCKET mainSock, newSock, tempSock;
+	u_long iMode = 1;
+#else
+	int mainSock, newSock, tempSock;
+#endif
+
+	// Init Buffers
+	if (init_buff() < 0) {
+		printf("Memory alloc error!\r\n");
+		return -1;
+	}	
+
+#ifdef WIN32
+	// Init network
 	if(WSAStartup(MAKEWORD(2,2),&wsaDat)!=0)
 	{
 		printf("WSA Initialization failed!\r\n");
 		WSACleanup();
 		system("PAUSE");
-		return 0;
+		return -1;
 	}
+#endif
 
-	mainSock=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
-	if(mainSock==INVALID_SOCKET)
-	{
-		printf("Socket creation failed.\r\n");
+	if ((mainSock = socket(AF_INET, SOCK_STREAM, 0)) == SOCK_ERROR) {
+	#ifdef WIN32
 		WSACleanup();
-		return 0;
+	#endif
+		return -1;
 	}
-
+	
 	serverInf.sin_family=AF_INET;
 	serverInf.sin_addr.s_addr=INADDR_ANY;
 	serverInf.sin_port=htons(NET_PORT);
+	memset(&(serverInf.sin_zero), 0, 8);
 
-	if(bind(mainSock,(SOCKADDR*)(&serverInf),sizeof(serverInf))==SOCKET_ERROR)
+	if(bind(mainSock,(struct sockaddr*)(&serverInf),sizeof(serverInf))==SOCK_ERROR)
 	{
 		printf("Unable to bind socket!\r\n");
+	#ifdef WIN32
 		WSACleanup();
-		return 0;
+	#endif
+		return -1;
 	}
 
 	listen(mainSock,1);
 
+#ifdef WIN32
+	ioctlsocket(mainSock, FIONBIO, &iMode);
+#else
+	fcntl(mainSock, F_SETFL, O_NONBLOCK);
+#endif
+
+	tempSock=SOCK_ERROR;
+	newSock=SOCK_ERROR;
 WAIT_CLIENT:
-	tempSock=SOCKET_ERROR;
-	while(tempSock==SOCKET_ERROR)
+	tempSock=accept(mainSock,NULL,NULL);
+	if (tempSock != SOCK_ERROR)
 	{
-		printf("Waiting for incoming connections...\r\n");
-		tempSock=accept(mainSock,NULL,NULL);
+		if (newSock != SOCK_ERROR)
+		{
+			close_network_socket(newSock);
+		}
+
+		newSock = tempSock;
+		tempSock = SOCK_ERROR;
+		
+		printf("\r\n-------------Client connected--------------------\r\n");
+		netLen = 0;
+
+		// If iMode!=0, non-blocking mode is enabled.
+#ifdef WIN32
+		ioctlsocket(newSock, FIONBIO, &iMode);
+#else
+		fcntl(newSock, F_SETFL, O_NONBLOCK);
+#endif
 	}
-	
-	// If iMode!=0, non-blocking mode is enabled.
-	iMode=1;
-	ioctlsocket(tempSock, FIONBIO, &iMode);
 
-	printf("Client connected!\r\n\r\n");
+	if (newSock != SOCK_ERROR)
+	{
+		if (NET_BUFSIZE == netLen)
+		{
+			netLen = 0;
+			printf("Client error!\r\n");
 
-	start_job(tempSock);
+			// Close our socket entirely
+			close_network_socket(newSock);
+
+			printf("\r\n---------------------------------\r\n");
+
+			newSock = SOCK_ERROR;
+		}
+		else
+		{
+			int len;
+			len = recv(newSock, &gNetBuff[netLen], NET_BUFSIZE-netLen, 0);
+			if (len > 0) {
+				netLen += len;
+				gNetBuff[netLen] = 0;
+//				printf("%d, %s\r\n", netLen, gNetBuff);
+				ret = json_parse(gNetBuff, gSettingsBuff, &gSettingsCount, gEncodesBuff, &gEncodesCount);
+				if (ret != JSMN_ERROR_PART) {
+					netLen = 0;
+					gEncodesPtr = 0;
+					strcpy(gNetBuff, "{\"status\":\"success\"}");
+					send(newSock, gNetBuff, strlen(gNetBuff), 0);
+				}
+
+				printf("settings = %d, encodes = %d\n", (int)gSettingsCount, (int)gEncodesCount);
+			}
+		}
+	}
+
+	if (gSettingsCount > 0) {
+		// TODO : init settings
+
+		gSettingsCount = 0;
+	}
+
+	if (gEncodesPtr < gEncodesCount) {
+		encode_loop();
+	}
 
 	goto WAIT_CLIENT;
 
 	// Close main Socket
 	closesocket(mainSock);
+#ifdef WIN32
 	WSACleanup();
-	return 0;
-}
-#else
-int main()
-{
-	int 			mainSock, tempSock;
-	struct 	sockaddr_in 	my_addr;
-	struct 	sockaddr_in 	their_addr;
-	socklen_t		sin_size;
-	
-	if ((mainSock = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
-		perror("socket");
-		return -1;
-	}
-	
-	my_addr.sin_family = AF_INET;
-	my_addr.sin_port = htons(NET_PORT);
-	my_addr.sin_addr.s_addr = INADDR_ANY;
-	memset(&(my_addr.sin_zero), 0, 8);
-	
-	if (bind(mainSock, (struct sockaddr *)&my_addr, sizeof(struct sockaddr)) == -1) {
-		perror("bind");
-		return -1;
-	}
-	
-	if (listen(mainSock, 1) == -1) {
-		perror("listen");
-		return -1;
-	}
-
-WAIT_CLIENT:
-	tempSock = -1;
-	while(tempSock == -1)
-	{
-		printf("Waiting for incoming connections...\r\n");
-		sin_size = sizeof(struct sockaddr_in);
-		if ((tempSock = accept(mainSock, (struct sockaddr *)&their_addr, &sin_size)) == -1) {
-			perror("accept");
-			continue;
-		}
-	}
-
-	fcntl(tempSock, F_SETFL, O_NONBLOCK);
-	printf("Client connected!\r\n\r\n");
-
-	start_job(tempSock);
-
-	goto WAIT_CLIENT;
-
-	close(mainSock);
-
-	return 0;
-}
 #endif
-
+	return 0;
+}

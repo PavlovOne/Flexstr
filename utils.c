@@ -5,8 +5,12 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include <stdarg.h>
+#ifdef WIN32
+#include <Windows.h>
+#else
 #include <unistd.h>
+#endif
 
 void sleepcp(int milliseconds)
 {

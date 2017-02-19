@@ -13,6 +13,7 @@
 #include <unistd.h>
 #endif
 
+#include "../config.h"
 #include "../utils.h"
 
 #define numberof(x) (sizeof((x))/sizeof((x)[0]))
@@ -20,6 +21,10 @@
 #define usage() {errx(1, "Please provide reader URL, such as:\n"\
                          "tmr:///com4 or tmr:///com4 --ant 1,2\n"\
                          "tmr://my-reader.example.com or tmr://my-reader.example.com --ant 1,2\n");}
+
+extern char *gEncodesBuff;
+extern size_t gEncodesCount;
+extern size_t gEncodesPtr;
 
 void errx(int exitval, const char *fmt, ...)
 {
@@ -293,42 +298,45 @@ int write_tag(const char *deviceUri, const uint8_t antNum, const uint8_t *epcDat
 	return 0;
 }
 
-int encode_loop(void)//uint8_t *epcData, int epcLength)
+int encode_loop(void)
 {
-	int statusFlag;
-	int epcLength = 12;
-	uint8_t epcData[] = {
-		0x01, 0x23, 0x45, 0x67, 0x89, 0xAB,
-		0xCD, 0xEF, 0x01, 0x23, 0x45, 0x00,
-	};
+	int i;
+	static int statusFlag;
+	uint8_t epcData[ENCODES_UNITSIZE];
 
-	if (!epcData || epcLength <= 0) {
-		printf("Invalid input params for encode_loop!\r\n");
+	if (gEncodesCount < gEncodesPtr)
 		return -1;
-	}
-
-	read_tag("tmr://localhost", 1);
-
-	statusFlag = 0;
-	while (1) {
-		if (get_gpi("tmr://localhost", 0) > 0)
-		{
-			if (statusFlag == 0)
-			{
-				statusFlag = 1;
-				printf("---------GPIO Triggered, writing tag\r\n");
-				write_tag("tmr://localhost", 1, epcData, epcLength);
-				epcData[epcLength-1]++;
-
-				sleepcp(1000);
-				read_tag("tmr://localhost", 1);
-			}
-		}
-		else {
-			statusFlag = 0;
-		}
-		sleepcp(1000);
-	}
 	
+	for (i=0; i<ENCODES_UNITSIZE; i++){
+		epcData[i] = gEncodesBuff[gEncodesPtr*ENCODES_UNITSIZE+i];
+		printf("%02x", epcData[i]&0xFF);
+	}
+	gEncodesPtr++;
+	printf("\n");
+/*
+	statusFlag = 0;
+	if (get_gpi("tmr://localhost", 0) > 0)
+	{
+		if (statusFlag == 0)
+		{
+			statusFlag = 1;
+			read_tag("tmr://localhost", 1);
+			sleepcp(100);
+
+			printf("---------GPIO Triggered, writing tag\r\n");
+			i = write_tag("tmr://localhost", 1, epcData, ENCODES_UNITSIZE);
+			if (i == 0){
+				gEncodesPtr++;
+			}
+			
+			sleepcp(100);
+			read_tag("tmr://localhost", 1);
+		}
+	}
+	else {
+		statusFlag = 0;
+	}
+	sleepcp(100);
+*/	
 	return 0;
 }
