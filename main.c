@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <string.h>
+#include <stdbool.h>
 #ifdef WIN32
 #include <io.h>
 #include <signal.h>
@@ -16,12 +17,13 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <errno.h>
+#include  <signal.h>
 #endif
 
 #include "config.h"
 #include "utils.h"
-#include "json/json.h"
 #include "encode/encode.h"
+#include "json/json.h"
 
 #ifdef WIN32
 #pragma comment(lib,"ws2_32.lib")
@@ -33,22 +35,18 @@
 #define WOULDBLCOK EWOULDBLOCK
 #endif
 
-char *gNetBuff, *gSettingsBuff, *gEncodesBuff;
-size_t gSettingsCount, gEncodesCount;
+ENCODE_SETTINGS gEncodeSettings;
+char *gNetBuff, *gEncodesBuff;
+size_t gEncodesCount;
 size_t gEncodesPtr;
 
 int init_buff(void)
 {
 	gEncodesCount = 0;
-	gSettingsCount = 0;
 	gEncodesPtr = 0;
 
 	gNetBuff = malloc(NET_BUFSIZE);
 	if (gNetBuff == NULL)
-		return -1;
-
-	gSettingsBuff = malloc(SETTINGS_BUFSIZE);
-	if (gSettingsBuff == NULL)
 		return -1;
 
 	gEncodesBuff = malloc(ENCODES_BUFSIZE);
@@ -57,6 +55,31 @@ int init_buff(void)
 
 	return 0;
 }
+
+void release_buff(void)
+{
+	if (gNetBuff) free(gNetBuff);
+	if (gEncodesBuff) free(gEncodesBuff);
+}
+
+#ifndef WIN32
+void     INThandler(int);
+void  INThandler(int sig)
+{
+	char  c;
+
+	signal(sig, SIG_IGN);
+	printf("Do you really want to quit? [y/n] ");
+	c = getchar();
+	if (c == 'y' || c == 'Y') {
+		release_buff();
+		exit(0);
+	}
+	else
+		signal(SIGINT, INThandler);
+	getchar(); // Get new line character
+}
+#endif
 
 int get_network_error(void)
 {
@@ -89,13 +112,21 @@ int main()
 	u_long iMode = 1;
 #else
 	int mainSock, newSock, tempSock;
+
+	signal(SIGINT, INThandler);
 #endif
 
 	// Init Buffers
 	if (init_buff() < 0) {
 		printf("Memory alloc error!\r\n");
 		return -1;
-	}	
+	}
+
+	// init Encoder
+	if (init_encode("tmr://localhost") < 0) {
+		printf("Init Encode error!\r\n");
+		return -1;
+	}
 
 #ifdef WIN32
 	// Init network
@@ -183,31 +214,35 @@ WAIT_CLIENT:
 			if (len > 0) {
 				netLen += len;
 				gNetBuff[netLen] = 0;
-//				printf("%d, %s\r\n", netLen, gNetBuff);
-				ret = json_parse(gNetBuff, gSettingsBuff, &gSettingsCount, gEncodesBuff, &gEncodesCount);
+				ret = json_parse(gNetBuff, &gEncodeSettings, gEncodesBuff, &gEncodesCount);
 				if (ret != JSMN_ERROR_PART) {
 					netLen = 0;
 					gEncodesPtr = 0;
-					strcpy(gNetBuff, "{\"status\":\"success\"}");
-					send(newSock, gNetBuff, strlen(gNetBuff), 0);
-				}
 
-				printf("settings = %d, encodes = %d\n", (int)gSettingsCount, (int)gEncodesCount);
+					if (ret == 0) { // success
+						printf("///// Recevied New settings and Encodes\r\n");
+						encode_print_status();
+
+						strcpy(gNetBuff, "{\"status\":\"success\"}");
+						send(newSock, gNetBuff, strlen(gNetBuff), 0);
+					}
+					else {
+						printf("Error settings & Encodes\n");
+						strcpy(gNetBuff, "{\"status\":\"Invalid JSON string\"}");
+						send(newSock, gNetBuff, strlen(gNetBuff), 0);
+					}
+				}
 			}
 		}
 	}
 
-	if (gSettingsCount > 0) {
-		// TODO : init settings
-
-		gSettingsCount = 0;
-	}
-
 	if (gEncodesPtr < gEncodesCount) {
-		encode_loop();
+//		encode_loop();
 	}
 
 	goto WAIT_CLIENT;
+
+	release_buff();
 
 	// Close main Socket
 	closesocket(mainSock);
